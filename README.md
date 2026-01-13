@@ -27,7 +27,6 @@ Javad Kouhestani
 javad.kouhestani@student.kuleuven.be
 
 ## References
-References
 Allport, G. W. (1954). The nature of prejudice. Addison-Wesley.
 Altemeyer, B. (1981). Right-wing authoritarianism. University of Manitoba Press.
 Bai, X., Ramos, M. R., & Fiske, S. T. (2020). As diversity increases, people paradoxically perceive social groups as more similar. Proceedings of the National Academy of Sciences, 117(23), 12741–12749. https://doi.org/10.1073/pnas.2000333117 
