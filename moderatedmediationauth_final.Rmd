@@ -1,0 +1,402 @@
+---
+title: "ulbphd_final"
+author: "javad kouhestani"
+date: "2025-12-29"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+## libraries
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(psych)
+library(lavaan)
+library(ggplot2)
+library(mediation)
+library(interactions)
+library(apaTables)
+```
+
+## Data wrangling
+
+note: some of the decisions are for better readability of the codes in the markdown version. this can facilitate the communication with research partners.
+
+```{r}
+#reading the excel file
+d_raw <- read_excel("Copy of Data PhD critical review paper.xlsx")
+d <- d_raw
+#making sure about the cleaning of the data using R's regular expressions (regex)
+d <- d %>% mutate(across(matches("^antw(1[2-9]|[2-9][0-9])$"), ~ ifelse(.x %in% 1:7, .x, NA)))
+#renaming the columns for better readability of the codes and avoiding mistakes
+d <- d %>% rename(
+    gender = antw2,
+    nationality = antw3,
+    language = antw4,
+    ethnicity = antw5,
+    religion = antw6,
+    education = antw7,
+    income = antw8,
+    pol_placement = antw9,
+
+    rwa01 = antw12,
+    rwa02 = antw13,
+    rwa03 = antw14,
+
+    sdo01 = antw15,
+    sdo02 = antw16,
+    sdo03 = antw17,
+
+    rwatown   = antw19,
+    rwawork   = antw20,
+    rwafamily = antw21,
+    rwapeers  = antw22,
+    
+    check     = antw23,
+
+    sdotown   = antw24,
+    sdowork   = antw25,
+    sdofamily = antw26,
+    sdopeers  = antw27,
+
+    sharedrealityt = antw30,
+    sharedrealityw = antw31,
+    sharedrealityf = antw32,
+    sharedrealityp = antw33,
+
+    influencet = antw34,
+    influencew = antw35,
+    influencef = antw36,
+    influencep = antw37,
+
+    enactt = antw38,
+    enactw = antw39,
+    enactf = antw40,
+    enactp = antw41,
+
+    prototypt = antw42,
+    prototypw = antw43,
+    prototypf = antw44,
+    prototypp = antw45,
+
+    connectt = antw46,
+    connectw = antw47,
+    connectf = antw48,
+    connectp = antw49,
+
+    avoid01 = antw52,
+    avoid02 = antw53,
+    avoid03 = antw54,
+
+    warmth01 = antw55,
+    warmth02 = antw56,
+    warmth03 = antw57
+  )
+head(d)
+dim(d)
+
+#remove check NA's
+d <- d %>% filter(check == 5)
+dim(d) #result: 12 observations have been removed
+#removing instructions using regex
+d <- d %>% dplyr::select(-dplyr::matches("^instr"))
+
+#missing data summary
+##missing per variable
+d %>% summarise(across(everything(), ~ mean(is.na(.x)))) %>% # first turning the data into true-false values and then calculating the mean
+  pivot_longer(everything(), names_to = "variables", values_to = "missing_prop") %>%
+  arrange(desc(missing_prop))
+##missing per respondents
+d %>% mutate(n_missing = rowSums(is.na(across(everything()))), missing_prop = n_missing / ncol(d)) %>%
+  dplyr::select(id, n_missing, missing_prop) %>%
+  arrange(desc(missing_prop))
+##remove participants with high NA's:
+d <- d %>% filter(!id %in% c(226, 337, 440, 425, 625))
+dim(d) #now we have 608 observations
+
+#class modifications
+##checking the class of the variables
+str(d)
+##then changing them to the correct class
+d <- d %>% mutate(
+    id = as.integer(id),
+    # nominal variables
+    gender = factor(gender, levels = c(1, 2, 3), labels = c("m", "f", "x")),
+    nationality = factor(nationality, levels = c(1, 2), labels = c("US", "other")),
+    language = factor(language, levels = c(1, 2, 3, 4), labels = c("english", "spanish", "chinese", "other")),
+    ethnicity = factor(ethnicity, levels = c(1,2,3,4,5,6,7),
+                       labels = c("white/european american","black/african american","native american",
+                                  "asian american","latinx/hispanic american", "native hawaiian/pacific islander","other")),
+    religion = factor(religion,    levels = c(1,2,3,4,5,6,7),
+                         labels = c("Christian","Muslim","Jew","Mormon","Hindu","Buddhist","Atheist")),
+    pol_placement = factor(pol_placement, levels = c(1,2,3,4),
+                           labels = c("Democrat","Republican","Independent","Other"))
+    )
+
+#final check
+str(d)
+```
+
+## moderation preparation
+
+#### confirmatory factor analysis
+
+it is used for showing the robustness of the constructs, before making the composite scores.
+
+```{r}
+# simultaneous cfa for dependent variables as they are theoretically related (also it allows to measure the fit indices because with three items, df was 0 --> no fit index)
+cfadv <- '
+  avoid =~ avoid01 + avoid02 + avoid03
+  warmth =~ warmth01 + warmth02 + warmth03
+'
+fitcfadv <- cfa(cfadv, data = d, std.lv = TRUE)
+summary(fitcfadv, fit.measures = TRUE, standardized = TRUE)
+fitMeasures(fitcfadv, c("cfi","tli","rmsea","srmr")) # all indices show fitness, df=15
+
+# simultaneous cfa for mediators
+cfam <- '
+  rwa_ind =~ rwa01 + rwa02 + rwa03
+  sdo_ind =~ sdo01 + sdo02 + sdo03
+'
+fitcfam <- cfa(cfam, data = d, std.lv = TRUE)
+summary(fitcfam, fit.measures = TRUE, standardized = TRUE)
+fitMeasures(fitcfam, c("cfi","tli","rmsea","srmr")) # without any modificating correlation, rmsea =.111, others were fit
+##modification indices
+mi <- modindices(fitcfam)
+mi_cfam <- mi[order(mi$mi, decreasing = TRUE), ]
+head(mi_cfam, 20) 
+```
+
+#### reliability check with cronbach's alpha and making composite scores
+
+```{r}
+#defining the constructs
+## individual-level constructs
+rwa_items <- c("rwa01", "rwa02", "rwa03")
+avoid_items <- c("avoid01", "avoid02", "avoid03")
+
+## context(group)-level constructs
+rwa_context_items <- c("rwafamily", "rwapeers")
+enact_context_items <- c("enactf", "enactp")                
+
+#cronbach's alpha for reliability check
+alpha_rwa <- alpha(d[, rwa_items])
+alpha_avoid <- alpha(d[, avoid_items])
+alpha_rwa_ctx <- alpha(d[, rwa_context_items])
+alpha_enact_ctx <- alpha(d[, enact_context_items])
+
+# making composite scores
+d$rwa_comp <- rowMeans(d[, rwa_items], na.rm = TRUE)
+d$avoid_comp <- rowMeans(d[, avoid_items], na.rm = TRUE)
+d$rwa_context_comp <- rowMeans(d[, rwa_context_items], na.rm = TRUE)
+d$enact_context_comp <- rowMeans(d[, enact_context_items], na.rm = TRUE)
+
+
+#table for summarizing the results
+rel_check <- data.frame(
+  Scale = c("RWA", "Avoidance", "RWA (context)", "Enact"),
+  Alpha = c(
+    alpha_rwa$total$raw_alpha,
+    alpha_avoid$total$raw_alpha,
+    alpha_rwa_ctx$total$raw_alpha,
+    alpha_enact_ctx$total$raw_alpha
+  ),
+  Mean = c(
+    mean(d$rwa_comp, na.rm = TRUE),
+    mean(d$avoid_comp, na.rm = TRUE),
+    mean(d$rwa_context_comp, na.rm = TRUE),
+    mean(d$enact_context_comp, na.rm = TRUE)
+  ),
+  SD = c(
+    sd(d$rwa_comp, na.rm = TRUE),
+    sd(d$avoid_comp, na.rm = TRUE),
+    sd(d$rwa_context_comp, na.rm = TRUE),
+    sd(d$enact_context_comp, na.rm = TRUE)
+  )
+)
+rel_check
+
+#final result: all alphas are above 0.75
+```
+
+####control variables
+
+```{r}
+#checking the correlation with the outcomes
+##for ordinal/numerical variables
+num_cntrl <- c("income","education", "age")
+cor(d[num_cntrl], d$avoid_comp, use = "pairwise.complete.obs") #all correlations are negligable
+
+##gender
+summary(lm(avoid_comp ~ gender, data = d)) #(b = −0.20, p = .011) small effect
+
+##nationality
+summary(lm(avoid_comp ~ nationality, data = d)) #not significant
+
+##ethnicity
+summary(lm(avoid_comp ~ ethnicity, data = d)) #not significant
+
+##religion
+summary(lm(avoid_comp ~ religion, data = d))  #not significant
+
+##political placement
+summary(lm(avoid_comp ~ pol_placement, data = d))  # republicans/democrats (b = -0.50, p < .001), small effect
+
+#final results: only gender and political placement show the significance. however, i am not sure about considering political placement as a control variable as it can play the role of a predictor itself (i need to consult with the supervisor about that). regarding gender, i will add it to the main context level regression analysis, yet for having more parsimony, it will not be added as the control variable to all of the regression models. 
+
+
+```
+
+#### mean centering
+
+```{r}
+d$rwa_comp_c <- scale(d$rwa_comp, center = TRUE, scale = FALSE)
+
+d$rwa_context_comp_c <- scale(d$rwa_context_comp, center = TRUE, scale = FALSE)
+d$enact_context_comp_c <- scale(d$enact_context_comp, center = TRUE, scale = FALSE)
+
+d$enactf_c <- scale(d$enactf, center = TRUE, scale = FALSE)
+d$enactp_c <- scale(d$enactp, center = TRUE, scale = FALSE)
+
+d$rwafamily_c <- scale(d$rwafamily, center = TRUE, scale = FALSE)
+d$rwapeers_c <- scale(d$rwapeers, center = TRUE, scale = FALSE)
+```
+
+## linear regression
+
+###### RWA group context -\> DV's
+
+```{r}
+# main
+rwacntxt_avoid <- lm(avoid_comp ~ rwa_context_comp_c, data = d)
+summary(rwacntxt_avoid)
+## group level RWA is positively and significantly associated with out-group avoidance attitudes (r2 = 0.05, b = 0.16, p < .001).
+
+#control
+rwacntxt_avoid_cntrl <- lm(avoid_comp ~ rwa_context_comp_c + gender, data = d)
+summary(rwacntxt_avoid_cntrl)
+## same prediction, independence from gender (b and p), (women showed lower avoid)
+
+```
+
+## mediations preps
+
+```{r}
+#prep for mediation --> making these variables numeric
+d$rwa_context_comp_c <- drop(d$rwa_context_comp_c)
+d$enact_context_comp_c <- drop(d$enact_context_comp_c)
+```
+
+## mediation
+
+```{r}
+# rwa group context * enact context --> avoid
+mrwa_enact_avoid <- lm(rwa_comp ~ rwa_context_comp_c, data = d)
+summary(mrwa_enact_avoid)
+yrwa_enact_avoid <- lm(avoid_comp ~ rwa_context_comp_c + rwa_comp, data = d)
+summary(yrwa_enact_avoid)
+
+med_rwaencavoid <- mediate(
+  model.m = mrwa_enact_avoid,
+  model.y = yrwa_enact_avoid,
+  treat = "rwa_context_comp_c",
+  mediator = "rwa_comp",
+  boot = TRUE
+)
+summary(med_rwaencavoid)
+```
+
+## moderations + mediation
+
+#### RWA group context \* enact -\> rwa med -\> DV's
+
+using process model 8 (Hayes, 2013) i ran the process code in another r script (it is not a package in r). this can be done in SPSS easier as it is embedded there.
+
+```{r, eval = FALSE}
+# this can work only after running the PROCESS code (from this website: https://haskayne.ucalgary.ca/CCRAM/resource-hub). also this can be done on SPSS as the PROCESS is embedded in SPSS.
+process(
+  data = d,
+  y = "avoid_comp",
+  x = "rwa_context_comp_c",
+  m = "rwa_comp",
+  w = "enact_context_comp_c",
+  model = 8,
+  center = 2,
+  moments = 1,
+  modelbt = 1,
+  boot = 10000,
+  seed = 654321
+)
+```
+
+###### plot (moderation)
+
+```{r}
+# rwa group context * enact context --> avoid
+pprwa_enact_avoid <- lm(rwa_comp ~ rwa_context_comp_c * enact_context_comp_c, data = d)
+
+###plot
+interact_plot(
+  model = pprwa_enact_avoid,
+  pred = rwa_context_comp_c,
+  modx = enact_context_comp_c,
+)
+
+```
+
+## repeated-measures ANOVA
+
+```{r}
+# repeated-measures anova
+d_longed <- d %>% 
+  pivot_longer(cols = c(enactt, enactw, enactf, enactp),
+  names_to = "domain",
+  values_to = "compcen"
+)
+anova_cen <- aov(compcen ~ domain + Error(id/domain), data = d_longed)
+summary(anova_cen)
+# a one-way repeated-measures ANOVA shows a significant difference between the means, F(3, 2424) = 58.66, p < .001
+
+# post-hoc pairwise comparisons
+pairwise.t.test(
+  d_longed$compcen,
+  d_longed$domain,
+  paired = TRUE,
+  p.adjust.method = "holm"
+)
+# all are significant except for family and peers
+
+# calculating means
+d_longed %>% group_by(domain) %>%
+  summarise(mean = mean(compcen, na.rm = TRUE), sd = sd(compcen, na.rm = TRUE))
+
+# visualization
+ggplot(d_longed, aes(x = domain, y = compcen)) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = .15) +
+  scale_x_discrete(labels = c(
+    enactf = "Family",
+    enactp = "Friends",
+    enactt = "Town",
+    enactw = "Colleagues"
+  )) +
+  labs(
+    x = "Social domain",
+    y = "norm enactment (mean)",
+    title = "Mean norm enactment across social domains"
+  ) +
+  theme_minimal()
+
+```
+
+## correlation table of the variables (apa style)
+
+```{r}
+#using apatables package
+apa.cor.table( d[, c("rwa_comp", "rwa_context_comp", "enact_context_comp", "avoid_comp")],
+  filename = "Table1_Correlationsfinal2.doc"
+)
+
+```
